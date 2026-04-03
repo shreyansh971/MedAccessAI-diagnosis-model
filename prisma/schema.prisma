@@ -1,0 +1,158 @@
+// prisma/schema.prisma
+// MedAccess AI — PostgreSQL Schema
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Practitioners (authenticated users of the platform)
+// ─────────────────────────────────────────────────────────────────────────────
+model Practitioner {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  displayName  String   @map("display_name") @db.VarChar(120)
+  role         Role     @default(RADIOLOGIST)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  scans     Scan[]
+  auditLogs AuditLog[]
+
+  @@map("practitioners")
+}
+
+enum Role {
+  RADIOLOGIST
+  ADMIN
+  VIEWER
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Patients
+// PHI-minimal: store only what is clinically necessary.
+// ─────────────────────────────────────────────────────────────────────────────
+model Patient {
+  id          String   @id @default(uuid()) @db.Uuid
+
+  /// Medical Record Number — unique within institution
+  mrn         String   @unique @db.VarChar(32)
+
+  /// Display name — encrypted at rest via pgcrypto in production
+  displayName String   @map("display_name") @db.VarChar(120)
+
+  dateOfBirth String   @map("date_of_birth") @db.VarChar(10)  // ISO 8601 YYYY-MM-DD
+  sex         Sex      @default(UNKNOWN)
+
+  notes       String?  @db.Text
+
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  scans       Scan[]
+
+  @@index([mrn])
+  @@map("patients")
+}
+
+enum Sex {
+  MALE
+  FEMALE
+  OTHER
+  UNKNOWN
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scans — one analysis result per uploaded image
+// ─────────────────────────────────────────────────────────────────────────────
+model Scan {
+  id               String          @id @default(uuid()) @db.Uuid
+
+  // FK relations
+  patientId        String?         @map("patient_id") @db.Uuid
+  patient          Patient?        @relation(fields: [patientId], references: [id], onDelete: SetNull)
+
+  practitionerId   String          @map("practitioner_id") @db.Uuid
+  practitioner     Practitioner    @relation(fields: [practitionerId], references: [id])
+
+  // Inference results
+  confidenceScore  Float           @map("confidence_score")           // sigmoid output [0,1]
+  diagnosticLabel  DiagnosticLabel @map("diagnostic_label")
+  thresholdUsed    Float           @default(0.5) @map("threshold_used")
+  processingTimeMs Float           @map("processing_time_ms")
+  modelVersion     String          @map("model_version") @db.VarChar(64)
+
+  // Storage
+  /// Anonymised S3/GCS object key — NOT a full URL (never expose bucket names in DB)
+  imageKey         String          @map("image_key") @db.VarChar(512)
+
+  status           ScanStatus      @default(COMPLETE)
+
+  analyzedAt       DateTime        @default(now()) @map("analyzed_at") @db.Timestamptz
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime        @updatedAt @map("updated_at") @db.Timestamptz
+
+  // Relations
+  auditLogs        AuditLog[]
+
+  @@index([patientId])
+  @@index([practitionerId])
+  @@index([analyzedAt(sort: Desc)])
+  @@map("scans")
+}
+
+enum DiagnosticLabel {
+  NORMAL
+  ABNORMAL
+}
+
+enum ScanStatus {
+  PENDING
+  PROCESSING
+  COMPLETE
+  FAILED
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AuditLog — immutable record of all access/analysis events (HIPAA §164.312)
+// ─────────────────────────────────────────────────────────────────────────────
+model AuditLog {
+  id               String        @id @default(uuid()) @db.Uuid
+  practitionerId   String        @map("practitioner_id") @db.Uuid
+  practitioner     Practitioner  @relation(fields: [practitionerId], references: [id])
+
+  scanId           String?       @map("scan_id") @db.Uuid
+  scan             Scan?         @relation(fields: [scanId], references: [id], onDelete: SetNull)
+
+  action           AuditAction
+  ipAddress        String?       @map("ip_address") @db.VarChar(45)  // IPv4/IPv6
+  userAgent        String?       @map("user_agent") @db.Text
+  detail           Json?         // arbitrary structured metadata
+
+  occurredAt       DateTime      @default(now()) @map("occurred_at") @db.Timestamptz
+
+  @@index([practitionerId])
+  @@index([occurredAt(sort: Desc)])
+  @@map("audit_logs")
+}
+
+enum AuditAction {
+  SCAN_CREATED
+  SCAN_VIEWED
+  PATIENT_CREATED
+  PATIENT_VIEWED
+  PATIENT_UPDATED
+  LOGIN_SUCCESS
+  LOGIN_FAILURE
+  EXPORT_REQUESTED
+}

@@ -1,0 +1,17 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+.env
+
+# Models (too large for GitHub)
+backend/models/*.keras
+backend/models/*.h5
+
+# Node
+node_modules/
+.next/
+
+# OS
+.DS_Store
+Thumbs.db

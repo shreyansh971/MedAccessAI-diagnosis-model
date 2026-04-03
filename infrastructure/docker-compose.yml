@@ -1,0 +1,69 @@
+# infrastructure/docker-compose.yml
+# Local development stack for MedAccess AI
+# Usage: docker-compose up -d
+
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: medaccess
+      POSTGRES_USER: medaccess
+      POSTGRES_PASSWORD: dev_password_change_in_prod
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medaccess"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI Backend ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DEBUG: "true"
+      SECRET_KEY: "dev-secret-key-replace-in-production"
+      DATABASE_URL: "postgresql+asyncpg://medaccess:dev_password_change_in_prod@postgres:5432/medaccess"
+      MODEL_PATH: "models/resnet50_chest.keras"
+      ALLOWED_ORIGINS: '["http://localhost:3000"]'
+      CONFIDENCE_THRESHOLD: "0.5"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../backend:/app
+      - model_cache:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ── Next.js Frontend ───────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:8000"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  model_cache:
